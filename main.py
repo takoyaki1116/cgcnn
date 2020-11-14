@@ -510,4 +510,6 @@ def adjust_learning_rate(optimizer, epoch, k):
 
 
 if __name__ == '__main__':
+    print('before main')
     main()
+    print('after main')
