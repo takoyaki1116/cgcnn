@@ -18,10 +18,9 @@ from cgcnn.data import CIFData
 from cgcnn.data import collate_pool, get_train_val_test_loader
 from cgcnn.model import CrystalGraphConvNet
 
-parser = argparse.ArgumentParser(description='Crystal Graph Convolutional Neural Networks')
-parser.add_argument('data_options', metavar='OPTIONS', nargs='+',
-                    help='dataset options, started with the path to root dir, '
-                         'then other options')
+parser = argparse.ArgumentParser(description='Transfer Learning CGCNN')
+parser.add_argument('modelpath', help='path to the trained model.')
+parser.add_argument('cifpath', help='path to the directory of CIF files.')
 parser.add_argument('--task', choices=['regression', 'classification'],
                     default='regression', help='complete a regression or '
                                                    'classification task (default: regression)')
@@ -89,10 +88,9 @@ else:
 
 
 def main():
-    global args, best_mae_error
+    global args, moldl_args, best_mae_error
 
-    # load data
-    dataset = CIFData(*args.data_options)
+    dataset = CIFData(args.cifpath)
     collate_fn = collate_pool
     train_loader, val_loader, test_loader = get_train_val_test_loader(
         dataset=dataset,
@@ -153,19 +151,28 @@ def main():
         raise NameError('Only SGD or Adam is allowed as --optim')
 
     # optionally resume from a checkpoint
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
-            args.start_epoch = checkpoint['epoch']
-            best_mae_error = checkpoint['best_mae_error']
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            normalizer.load_state_dict(checkpoint['normalizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
+    if os.path.isfile(args.modelpath):
+        print("=> loading model '{}'".format(args.modelpath))
+        checkpoint = torch.load(args.modelpath,
+                                map_location=lambda storage, loc: storage)
+        model.load_state_dict(checkpoint['state_dict'])
+        normalizer.load_state_dict(checkpoint['normalizer'])
+        print("=> loaded model '{}' (epoch {}, validation {})"
+              .format(args.modelpath, checkpoint['epoch'],
+                      checkpoint['best_mae_error']))
+    else:
+        print("=> no model found at '{}'".format(args.modelpath))
+
+    model.eval()
+    params_to_update = []
+    update_param_names = ['fc_out.weight', 'fc_out.bias', 'conv_to_fc.bias', 'conv_to_fc.weight']
+    for name, param in model.named_parameters():
+            #logger.info(f'name : {name}')
+            if name in update_param_names:
+                param.requires_grad = True
+                params_to_update.append(name)
+            else:
+                param.requires_grad= False
 
     scheduler = MultiStepLR(optimizer, milestones=args.lr_milestones,
                             gamma=0.1)
@@ -201,8 +208,8 @@ def main():
 
     # test best model
     print('---------Evaluate Model on Test Set---------------')
-    best_checkpoint = torch.load('model_best.pth.tar')
-    model.load_state_dict(best_checkpoint['state_dict'])
+    trans_best_checkpoint = torch.load('trans_model_best.pth.tar')
+    model.load_state_dict(trans_best_checkpoint['state_dict'])
     validate(test_loader, model, criterion, normalizer, test=True)
 
 
@@ -496,10 +503,10 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+def save_checkpoint(state, is_best, filename='trans_checkpoint.pth.tar'):
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, 'model_best.pth.tar')
+        shutil.copyfile(filename, 'trans_model_best.pth.tar')
 
 
 def adjust_learning_rate(optimizer, epoch, k):
