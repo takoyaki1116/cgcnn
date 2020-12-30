@@ -4,6 +4,7 @@ import shutil
 import sys
 import time
 import warnings
+import wandb
 from random import sample
 
 import numpy as np
@@ -90,7 +91,13 @@ else:
 
 def main():
     global args, best_mae_error
-
+    note = 'debug'
+    project_name = 'CGCNN'
+    wandb.init(
+        project=project_name,
+    )
+    wandb.run.name = 'CGCNN-' + note + '-' + wandb.run.id
+    wandb.config.update(args)
     # load data
     dataset = CIFData(*args.data_options)
     collate_fn = collate_pool
@@ -172,11 +179,11 @@ def main():
 
     for epoch in range(args.start_epoch, args.epochs):
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, normalizer)
+        train(train_loader, model, criterion, optimizer, epoch, normalizer,wandb)
 
         # evaluate on validation set
         mae_error = validate(val_loader, model, criterion, normalizer)
-
+        wandb.log({'val_mae': mae_error}, step=epoch+1)
         if mae_error != mae_error:
             print('Exit due to NaN')
             sys.exit(1)
@@ -207,7 +214,7 @@ def main():
 
 
 
-def train(train_loader, model, criterion, optimizer, epoch, normalizer):
+def train(train_loader, model, criterion, optimizer, epoch, normalizer, wandb):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -301,7 +308,7 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
                     prec=precisions, recall=recalls, f1=fscores,
                     auc=auc_scores)
                 )
-
+        wandb.log({'train_mae':mae_errors.avg},step = epoch + 1)
 
 def validate(val_loader, model, criterion, normalizer, test=False):
     batch_time = AverageMeter()
