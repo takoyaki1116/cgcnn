@@ -93,3 +93,13 @@ Local
 
 # .DS_Store
 .DS_Store
+*.pth.tar
+test_results.csv
+/wandb/
+all.tar.gz
+all_data/
+cgcnn/bin/
+cgcnn/etc/
+cgcnn/lib64
+cgcnn/pyvenv.cfg
+cgcnn/share/

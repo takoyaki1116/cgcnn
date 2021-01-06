@@ -185,3 +185,16 @@ class CrystalGraphConvNet(nn.Module):
         summed_fea = [torch.mean(atom_fea[idx_map], dim=0, keepdim=True)
                       for idx_map in crystal_atom_idx]
         return torch.cat(summed_fea, dim=0)
+
+class SimpleNN(nn.Module):
+    def __init__(self, in_feature, out_feature):
+        super(SimpleNN, self).__init__()
+        self.linear1 = nn.Linear(in_feature, 128)
+        self.linear2 = nn.Linear(128, 64)
+        self.linear3 = nn.Linear(64, out_feature)
+
+    def forward(self, x): 
+        h   = self.linear1(x)
+        h   = self.linear2(h)
+        out = self.linear3(h)
+        return out

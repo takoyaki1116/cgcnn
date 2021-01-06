@@ -195,5 +195,15 @@ This software was primarily written by [Tian Xie](http://txie.me) who was advise
 
 CGCNN is released under the MIT License.
 
-
+## Run Experiments 
+### Combine SPS and Bulk Moduli Result 
+```
+bash data/prepare.sh
+python main.py --train-ratio 0.6 --val-ratio 0.2 --test-ratio 0.2 ./all_data/thermal_conductivity/ -P mix --epochs 1000
+```
+(In Thomas)
+```
+source ./cgcnn/bin/activate.fish
+python main.py --train-ratio 0.6 --val-ratio 0.2 --test-ratio 0.2 ./all_data/thermal_conductivity/ -P mix --epochs 1000
+```
 

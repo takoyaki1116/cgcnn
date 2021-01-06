@@ -17,12 +17,13 @@ from torch.optim.lr_scheduler import MultiStepLR
 
 from cgcnn.data import CIFData
 from cgcnn.data import collate_pool, get_train_val_test_loader
-from cgcnn.model import CrystalGraphConvNet
+from cgcnn.model import CrystalGraphConvNet, SimpleNN
 
 parser = argparse.ArgumentParser(description='Crystal Graph Convolutional Neural Networks')
 parser.add_argument('data_options', metavar='OPTIONS', nargs='+',
                     help='dataset options, started with the path to root dir, '
                          'then other options')
+parser.add_argument('--property', '-P', default='', type=str, help='material property which you want model to learn')
 parser.add_argument('--task', choices=['regression', 'classification'],
                     default='regression', help='complete a regression or '
                                                    'classification task (default: regression)')
@@ -134,20 +135,57 @@ def main():
     structures, _, _ = dataset[0]
     orig_atom_fea_len = structures[0].shape[-1]
     nbr_fea_len = structures[1].shape[-1]
-    model = CrystalGraphConvNet(orig_atom_fea_len, nbr_fea_len,
+    model_a = CrystalGraphConvNet(orig_atom_fea_len, nbr_fea_len,
                                 atom_fea_len=args.atom_fea_len,
                                 n_conv=args.n_conv,
                                 h_fea_len=args.h_fea_len,
                                 n_h=args.n_h,
                                 classification=True if args.task ==
                                                        'classification' else False)
+    model_b = CrystalGraphConvNet(orig_atom_fea_len, nbr_fea_len,
+                                atom_fea_len=args.atom_fea_len,
+                                n_conv=args.n_conv,
+                                h_fea_len=args.h_fea_len,
+                                n_h=args.n_h,
+                                classification=True if args.task ==
+                                                       'classification' else False)
+    model =  SimpleNN(in_feature=256, out_feature=1)
+    # Pretrained Model Path
+    model_a_path='./bulk_moduli-model_best.pth.tar'
+    model_b_path='./sps-model_best.pth.tar'
+    # Load Latest model State
+    ckpt_a = torch.load(model_a_path)
+    ckpt_b = torch.load(model_b_path)
+    # Load Model 
+    model_a.load_state_dict(ckpt_a['state_dict'])
+    model_b.load_state_dict(ckpt_b['state_dict'])
+
+    def get_activation_a(name, activation_a):
+        def hook(model, input, output):
+            activation_a[name] = output.detach()
+        return hook
+    def get_activation_b(name, activation_b):
+        def hook(model, input, output):
+            activation_b[name] = output.detach()
+        return hook
+
     if args.cuda:
         model.cuda()
+        model_a.cuda()
+        model_b.cuda()
+    activation_a = {}
+    activation_b = {}
+    # Hook the Activation FUnction 
+    model_a.conv_to_fc.register_forward_hook(get_activation_a('conv_to_fc', activation_a))
+    model_b.conv_to_fc.register_forward_hook(get_activation_b('conv_to_fc', activation_b))
+    wandb.watch(model_a)
+    wandb.watch(model_b)
+    wandb.watch(model)
 
     # define loss func and optimizer
     if args.task == 'classification':
         criterion = nn.NLLLoss()
-    else:
+    else: 
         criterion = nn.MSELoss()
     if args.optim == 'SGD':
         optimizer = optim.SGD(model.parameters(), args.lr,
@@ -179,10 +217,10 @@ def main():
 
     for epoch in range(args.start_epoch, args.epochs):
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, normalizer,wandb)
+        train(train_loader, model_a, model_b, model, criterion, optimizer, epoch, normalizer,wandb, activation_a, activation_b)
 
         # evaluate on validation set
-        mae_error = validate(val_loader, model, criterion, normalizer)
+        mae_error = validate(val_loader, model_a, model_b, model, criterion, normalizer, test=False, activation_a=activation_a, activation_b=activation_b)
         wandb.log({'val_mae': mae_error}, step=epoch+1)
         if mae_error != mae_error:
             print('Exit due to NaN')
@@ -204,17 +242,17 @@ def main():
             'optimizer': optimizer.state_dict(),
             'normalizer': normalizer.state_dict(),
             'args': vars(args)
-        }, is_best)
+        }, is_best, prop=args.property)
 
     # test best model
     print('---------Evaluate Model on Test Set---------------')
-    best_checkpoint = torch.load('model_best.pth.tar')
+    best_checkpoint = torch.load(args.property+'-model_best.pth.tar')
     model.load_state_dict(best_checkpoint['state_dict'])
-    validate(test_loader, model, criterion, normalizer, test=True)
+    validate(test_loader, model_a, model_b, model, criterion, normalizer, test=True, activation_a=activation_a, activation_b=activation_b)
 
 
 
-def train(train_loader, model, criterion, optimizer, epoch, normalizer, wandb):
+def train(train_loader, model_a, model_b, model, criterion, optimizer, epoch, normalizer, wandb, activation_a, activation_b):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -228,6 +266,8 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer, wandb):
         auc_scores = AverageMeter()
 
     # switch to train mode
+    model_a.eval()
+    model_b.eval()
     model.train()
 
     end = time.time()
@@ -256,7 +296,21 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer, wandb):
             target_var = Variable(target_normed)
 
         # compute output
-        output = model(*input_var)
+        output_a = model_a(*input_var)
+        output_b = model_b(*input_var)
+
+        feature_a = activation_a['conv_to_fc']
+        feature_b = activation_b['conv_to_fc']
+        #activation_a, activation_b = {}, {}
+        #output_c = model_a(*input_var)
+        #output_d = model_b(*input_var)
+        #print(f'{output_c.shape}')
+        #feature_c = activation_a['conv_to_fc']
+        #feature_d = activation_b['conv_to_fc']
+        #activation_a, activation_b = {}, {}
+        #print(f'feture a {feature_a.shape} feature b {feature_b.shape}')
+        combined_input  = torch.cat((feature_a, feature_b), dim=1)
+        output = model(combined_input)
         loss = criterion(output, target_var)
 
         # measure accuracy and record loss
@@ -310,7 +364,7 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer, wandb):
                 )
         wandb.log({'train_mae':mae_errors.avg},step = epoch + 1)
 
-def validate(val_loader, model, criterion, normalizer, test=False):
+def validate(val_loader, model_a, model_b, model, criterion, normalizer, test=False, activation_a={}, activation_b={}):
     batch_time = AverageMeter()
     losses = AverageMeter()
     if args.task == 'regression':
@@ -327,6 +381,8 @@ def validate(val_loader, model, criterion, normalizer, test=False):
         test_cif_ids = []
 
     # switch to evaluate mode
+    model_a.eval()
+    model_b.eval()
     model.eval()
 
     end = time.time()
@@ -355,7 +411,20 @@ def validate(val_loader, model, criterion, normalizer, test=False):
                 target_var = Variable(target_normed)
 
         # compute output
-        output = model(*input_var)
+        #output = model(*input_var)
+
+        ## Added 
+        #print(f"{activation_a['conv_to_fc'].shape}")
+        #print(f"{activation_b['conv_to_fc'].shape}")
+        output_a = model_a(*input_var)
+        output_b = model_b(*input_var)
+        feature_a = activation_a['conv_to_fc']
+        #print(activation_b.keys(), activation_b)
+        feature_b = activation_b['conv_to_fc']
+        #print(f'feture a {feature_a.shape} feature b {feature_b.shape}')
+        combined_input  = torch.cat((feature_a, feature_b), dim=1)
+        output = model(combined_input)
+
         loss = criterion(output, target_var)
 
         # measure accuracy and record loss
@@ -503,10 +572,11 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
-    torch.save(state, filename)
+def save_checkpoint(state, is_best, prop, filename='checkpoint.pth.tar'):
+    saved_filename = prop+'-'+filename
+    torch.save(state, saved_filename)
     if is_best:
-        shutil.copyfile(filename, 'model_best.pth.tar')
+        shutil.copyfile(saved_filename, prop+'-model_best.pth.tar')
 
 
 def adjust_learning_rate(optimizer, epoch, k):
